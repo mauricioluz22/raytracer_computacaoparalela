@@ -17,5 +17,3 @@ $ ./main <width> > image.ppm
 # ou
 $ OMP_NUM_THREADS=<n> ./main <width> > image.ppm
 ```
-
-Nota: os símbolos < e > não são necessários.
