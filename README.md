@@ -15,5 +15,5 @@ Outras informações printadas pelo código são direcionadas à saída de erro 
 ```bash
 $ ./main <width> > image.ppm
 # ou
-$ OMP_NUM_THREADS=<n> ./main > image.ppm
+$ OMP_NUM_THREADS=<n> <width> ./main > image.ppm
 ```
