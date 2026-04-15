@@ -39,20 +39,19 @@ class camera {
 
         std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         std::vector<color> pixels;
-        // pré-alocar vetor. agiliza processamento ao evitar realocações.
+        // pré-alocar vetor. agiliza processamento ao evitar realocações e permitir prefetching.
         pixels.resize(image_width * image_height); 
         int j, i;
         double t1 = omp_get_wtime();
-        // std::fprintf(stderr, "Thread n.: %d\n", omp_get_thread_num());
         // collapse para paralelizar ambos os loops.
-        // dynamic. guided 
-        // 
+        // guided parece ter um desempenho melhor conforme o tamanho da imagem cresce (dado o aumento da complexidade)
         #pragma omp parallel for collapse(2) schedule(guided, (image_height * image_width) / omp_get_num_threads()) private(j, i)
         for (j = 0; j < image_height; j++) {
-            // std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
             for (i = 0; i < image_width; i++) {
                 color pixel_color(0,0,0);
                 int sample;
+                // carrega algumas das cores do array na cache antes de seu uso
+                // evita cache-misses e evita acessos à memória principal
                 if (i + 64 < image_width) {
                     __builtin_prefetch(&pixels[i + 64 + j * image_width], 1, 2);
                 }
@@ -67,14 +66,11 @@ class camera {
         // std::clog << "Elapsed time: " << (omp_get_wtime() - t1) << std::endl;
         std::clog << (omp_get_wtime() - t1) << std::endl;
 
-        // outro trecho não-paralelizável, porém muito rápido
         for (j = 0; j < image_height; j++) {
             for (i = 0; i < image_width; i++) {
                 write_color(std::cout, pixels[i + j * image_width]);
             }
         }
-
-        // std::clog << "\rDone.                 \n";
     }
 
   private:
@@ -87,15 +83,18 @@ class camera {
     vec3   u, v, w;              // Camera frame basis vectors
     vec3   defocus_disk_u;       // Defocus disk horizontal radius
     vec3   defocus_disk_v;       // Defocus disk vertical radius
-    std::vector<std::mt19937> rngs;
+    std::vector<std::mt19937> rngs; // geradores de números pseudo aleatórios divididos por thread para evitar concorrência
 
     void initialize() {
         // hack para pegar numero de threads em codigo sequencial
         int size = 1;
+        // shared pois uma mesma variável está sendo modificada em cada thread...
+        // provavelmente desnecessário dado que todas retornarão o mesmo valor
         #pragma omp parallel shared(size)
         {
-          #pragma omp single
-          size = omp_get_num_threads();
+            // OpenMP só retorna o número correto de threads em seções paralelas pelo que vi :thinking: 
+            #pragma omp single
+            size = omp_get_num_threads();
         }
         rngs.resize(size);
         for (auto& rng : rngs) {
@@ -154,7 +153,7 @@ class camera {
 
     vec3 sample_square() const {
         // Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
-        // std::fprintf(stderr, "%d\n", omp_get_thread_num());
+        // código modificado para passar por parâmetro os rngs de cada thread
         return vec3(random_double_th(rngs[omp_get_thread_num()]) - 0.5, random_double_th(rngs[omp_get_thread_num()]) - 0.5, 0);
     }
 
