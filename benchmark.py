@@ -141,4 +141,4 @@ print("- grafico_eficiencia.png")
 print("- grafico_weak_scaling.png")
 
 #$ Comando para rodar o benchmark:
-# python3 benchmark.py
+# python3 benchmark.py  
