@@ -113,6 +113,7 @@ int main(int argc, char *argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     if (size < 2) {
+        std::cout << "P3\n" << cam.image_width << ' ' << image_height << "\n255\n";
         cam.render(world);
     } else if (myrank == 0) {
         // Loop:
