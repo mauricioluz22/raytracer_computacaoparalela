@@ -14,11 +14,13 @@
 #include "hittable.h"
 #include "material.h"
 
-#include <omp.h>
+// #include <omp.h>
 #include <cstdlib>
 #include <random>
 
 class camera {
+  private:
+    bool   initialized       = false;
   public:
     double aspect_ratio      = 1.0;  // Ratio of image width over height
     int    image_width       = 100;  // Rendered image width in pixel count
@@ -33,25 +35,57 @@ class camera {
     double defocus_angle = 0;  // Variation angle of rays through each pixel
     double focus_dist = 10;    // Distance from camera lookfrom point to plane of perfect focus
 
+    // esta funcao assume que o buffer consiste numa linha (isto eh, num array)
+    // cujo tamanho eh igual ou maior a this->image_width
+    void render_line(const hittable& world, int line, color *buffer) {
+        if (!this->initialized) {
+            this->initialize();
+        }
+        int i;
+        // std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
+        for (i = 0; i < image_width; i++) {
+            color pixel_color(0,0,0);
+            int sample;
+            if (i + 64 < image_width) {
+                __builtin_prefetch(&buffer[i + 64], 1, 2);
+            }
+            for (sample = 0; sample < samples_per_pixel; sample++) {
+                ray r = get_ray(i, line);
+                pixel_color += ray_color(r, max_depth, world);
+            }
+            // write_color(std::cout, pixel_samples_scale * pixel_color);
+            buffer[i] = pixel_samples_scale * pixel_color;
+        }
+    }
+
+    void write_image(const std::vector<color>& pixels) {
+        for (int j = 0; j < image_height; j++) {
+            for (int i = 0; i < image_width; i++) {
+                write_color(std::cout, pixels[i + j * image_width]);
+            }
+        }
+    }
+
     // candidato ao openmp
     void render(const hittable& world) {
-        initialize();
+        if (!this->initialized) {
+            initialize();
+            std::clog << "Initializing" << std::endl;
+        }
+        // initialize();
 
-        std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        // std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         std::vector<color> pixels;
-        // pré-alocar vetor. agiliza processamento ao evitar realocações e permitir prefetching.
-        pixels.resize(image_width * image_height); 
+        // pré-alocar vetor. agiliza processamento ao evitar realocações.
+        pixels.resize(image_width * image_height);
         int j, i;
-        double t1 = omp_get_wtime();
-        // collapse para paralelizar ambos os loops.
-        // guided parece ter um desempenho melhor conforme o tamanho da imagem cresce (dado o aumento da complexidade)
-        #pragma omp parallel for collapse(2) schedule(guided, (image_height * image_width) / omp_get_num_threads()) private(j, i)
+        // double t1 = omp_get_wtime();
+        // #pragma omp parallel for collapse(2) schedule(guided, (image_height * image_width) / omp_get_num_threads()) private(j, i)
         for (j = 0; j < image_height; j++) {
+            // std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
             for (i = 0; i < image_width; i++) {
                 color pixel_color(0,0,0);
                 int sample;
-                // carrega algumas das cores do array na cache antes de seu uso
-                // evita cache-misses e evita acessos à memória principal
                 if (i + 64 < image_width) {
                     __builtin_prefetch(&pixels[i + 64 + j * image_width], 1, 2);
                 }
@@ -64,42 +98,30 @@ class camera {
             }
         }
         // std::clog << "Elapsed time: " << (omp_get_wtime() - t1) << std::endl;
-        std::clog << (omp_get_wtime() - t1) << std::endl;
+        // std::clog << (omp_get_wtime() - t1) << std::endl;
 
+        // outro trecho não-paralelizável, porém muito rápido
         for (j = 0; j < image_height; j++) {
             for (i = 0; i < image_width; i++) {
                 write_color(std::cout, pixels[i + j * image_width]);
             }
         }
+
+        // std::clog << "\rDone.                 \n";
     }
 
-  private:
-    int    image_height;         // Rendered image height
-    double pixel_samples_scale;  // Color scale factor for a sum of pixel samples
-    point3 center;               // Camera center
-    point3 pixel00_loc;          // Location of pixel 0, 0
-    vec3   pixel_delta_u;        // Offset to pixel to the right
-    vec3   pixel_delta_v;        // Offset to pixel below
-    vec3   u, v, w;              // Camera frame basis vectors
-    vec3   defocus_disk_u;       // Defocus disk horizontal radius
-    vec3   defocus_disk_v;       // Defocus disk vertical radius
-    std::vector<std::mt19937> rngs; // geradores de números pseudo aleatórios divididos por thread para evitar concorrência
+    int get_image_height() {
+        if (!initialized) {
+            initialize();
+        }
+        return this->image_height;
+    }
 
     void initialize() {
-        // hack para pegar numero de threads em codigo sequencial
-        int size = 1;
-        // shared pois uma mesma variável está sendo modificada em cada thread...
-        // provavelmente desnecessário dado que todas retornarão o mesmo valor
-        #pragma omp parallel shared(size)
-        {
-            // OpenMP só retorna o número correto de threads em seções paralelas pelo que vi :thinking: 
-            #pragma omp single
-            size = omp_get_num_threads();
+        if (initialized) {
+            return;
         }
-        rngs.resize(size);
-        for (auto& rng : rngs) {
-            rng.seed(std::random_device{}());
-        }
+        initialized = true;
         image_height = int(image_width / aspect_ratio);
         image_height = (image_height < 1) ? 1 : image_height;
 
@@ -135,6 +157,17 @@ class camera {
         defocus_disk_u = u * defocus_radius;
         defocus_disk_v = v * defocus_radius;
     }
+  private:
+    int    image_height;         // Rendered image height
+    double pixel_samples_scale;  // Color scale factor for a sum of pixel samples
+    point3 center;               // Camera center
+    point3 pixel00_loc;          // Location of pixel 0, 0
+    vec3   pixel_delta_u;        // Offset to pixel to the right
+    vec3   pixel_delta_v;        // Offset to pixel below
+    vec3   u, v, w;              // Camera frame basis vectors
+    vec3   defocus_disk_u;       // Defocus disk horizontal radius
+    vec3   defocus_disk_v;       // Defocus disk vertical radius
+    // std::vector<std::mt19937> rngs;
 
     ray get_ray(int i, int j) const {
         // Construct a camera ray originating from the defocus disk and directed at a randomly
@@ -153,8 +186,8 @@ class camera {
 
     vec3 sample_square() const {
         // Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
-        // código modificado para passar por parâmetro os rngs de cada thread
-        return vec3(random_double_th(rngs[omp_get_thread_num()]) - 0.5, random_double_th(rngs[omp_get_thread_num()]) - 0.5, 0);
+        // std::fprintf(stderr, "%d\n", omp_get_thread_num());
+        return vec3(random_double() - 0.5, random_double() - 0.5, 0);
     }
 
     vec3 sample_disk(double radius) const {

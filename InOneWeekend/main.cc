@@ -11,6 +11,7 @@
 
 #include <vector>
 #include <cstdlib>
+#include <unordered_map>
 
 #include "rtweekend.h"
 
@@ -19,7 +20,11 @@
 #include "hittable_list.h"
 #include "material.h"
 #include "sphere.h"
+#include "mpi.h"
 
+static int const TAG_REQUEST = 20;
+static int const TAG_WORK = 20;
+static int const TAG_DIE = 30;
 
 int main(int argc, char *argv[]) {
     int width = 1200;
@@ -31,6 +36,7 @@ int main(int argc, char *argv[]) {
     auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
     world.add(make_shared<sphere>(point3(0,-1000,0), 1000, ground_material));
 
+    // geracao de mundo
     for (int a = -11; a < 11; a++) {
         for (int b = -11; b < 11; b++) {
             auto choose_mat = random_double();
@@ -83,5 +89,112 @@ int main(int argc, char *argv[]) {
     cam.defocus_angle = 0.6;
     cam.focus_dist    = 10.0;
 
-    cam.render(world);
+    cam.initialize();
+    int const image_height = cam.get_image_height();
+    std::vector<color> pixels;
+    pixels.resize(cam.image_width * image_height);
+    
+    // inicializar MPI por volta daqui
+    int myrank, size;
+    MPI_Status status;
+    color *raw_data = pixels.data();
+    int done = 0;
+    int count = 0;
+    MPI_Init(&argc, &argv);
+
+    MPI_Datatype MPI_VEC3;
+    int block_lengths[1] = {3}; // 3 doubles
+    MPI_Aint offsets[1] = {offsetof(color, e)};
+    MPI_Datatype types[1] = {MPI_DOUBLE};
+    // 1 == comprimento dos arrays. em geral, os tres terao o mesmo tamanho
+    MPI_Type_create_struct(1, block_lengths, offsets, types, &MPI_VEC3);
+    MPI_Type_commit(&MPI_VEC3);
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    if (size < 2) {
+        cam.render(world);
+    } else if (myrank == 0) {
+        // Loop:
+        // MPI_Probe para verificar se ha mensagem e verificar quem a enviou antes de a receber
+        // Se for TAG_REQUEST, enviar uma linha pro trabalhador e salvar linha enviada num dicionario/array
+        // Se for TAG_WORK E ainda ha linhas para renderizar, repete instrucao anterior. Ademais, salvar vetor retornado pelo trabalhador
+        // Se nao houverem linhas para renderizar, enviar TAG_DIE para todos os trabalhadores
+        // Responder o primeiro trabalhador a pedir por mais trabalho, independente do quão frequentemente este o peça
+
+        // coordenador inicializa o arquivo da imagem (evita que o header ppm seja salvo multiplas vezes)
+        std::cout << "P3\n" << cam.image_width << ' ' << image_height << "\n255\n";
+        std::unordered_map<int, int> line_per_worker;
+        int done = 0;
+        while (!done) {
+            int tmp; // so pra poder receber a mensagem
+            MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            if (status.MPI_TAG == TAG_REQUEST) {
+                int cnt;
+                MPI_Get_count(&status, MPI_INT, &cnt);
+                std::clog << "trying 0 req" << cnt << std::endl;
+                MPI_Recv(&tmp, 1, MPI_INT, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, &status);
+                line_per_worker[status.MPI_SOURCE] = count;
+                MPI_Send(&count, 1, MPI_INT, status.MPI_SOURCE, TAG_WORK, MPI_COMM_WORLD);
+                count += 1;
+            } else if (status.MPI_TAG == TAG_WORK) {
+            std::clog << "trying 0 work" << std::endl;
+                MPI_Recv(
+                    &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width],
+                    cam.image_width,
+                    MPI_VEC3,
+                    status.MPI_SOURCE,
+                    status.MPI_TAG,
+                    MPI_COMM_WORLD,
+                    &status
+                );
+                if (count >= cam.image_width) {
+                    done = 1;
+                } else {
+                    line_per_worker[status.MPI_SOURCE] = count;
+                    MPI_Send(&count, 1, MPI_INT, status.MPI_SOURCE, TAG_WORK, MPI_COMM_WORLD);
+                    count += 1;
+                }
+            }
+        }
+        // tarefa do coordenador = enviar número da linha a ser renderizada aos trabalhadores [0, image_height)
+        // for (int line = 0; line < image_height; line++) {
+        //     cam.render_line(world, line, &raw_data[line * cam.image_width]);
+        // }
+        cam.write_image(pixels);
+        for (int i = 1; i < size; i++) {
+            MPI_Send(&i, 1, MPI_INT, i, TAG_DIE, MPI_COMM_WORLD);
+        }
+    } else {
+        // Loop:
+        // MPI_Probe para verificar se ha trabalho para renderizar antes de tentar receber mensagem
+        // Se for TAG_WORK, renderizar linha, devolver vetor para o coordenador e pedir por mais trabalho
+        // Se for TAG_DIE, finalizar a execucao
+        // Enviar TAG_REQUEST ao terminar o trabalho dentro do loop e aguardar resposta do coordenador
+
+        int done = 0;
+        MPI_Send(&done, 1, MPI_INT, 0, TAG_REQUEST, MPI_COMM_WORLD);
+        while (!done) {
+            MPI_Probe(0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            if (status.MPI_TAG == TAG_DIE) {
+                std::clog << "trying n die" << std::endl;
+                int tmp;
+                MPI_Recv(&tmp, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
+                done = 1;
+            } else if (status.MPI_TAG == TAG_WORK) {
+                std::clog << "trying n work" << std::endl;
+                int line;
+                MPI_Recv(&line, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
+                cam.render_line(world, line, &raw_data[line * cam.image_width]);
+                MPI_Send(&raw_data[line * cam.image_width], cam.image_width, MPI_VEC3, 0, TAG_WORK, MPI_COMM_WORLD);
+            }
+
+        }
+        // tarefa dos trabalhadores = renderizar linhas requisitadas pelo coordenador
+    }
+    // cam.render(world);
+    // terminar MPI exatamente aqui
+end:
+    MPI_Type_free(&MPI_VEC3);
+    MPI_Finalize();
 }
