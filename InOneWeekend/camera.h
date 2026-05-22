@@ -71,7 +71,6 @@ class camera {
     void render(const hittable& world) {
         if (!this->initialized) {
             initialize();
-            std::clog << "Initializing" << std::endl;
         }
         // initialize();
 

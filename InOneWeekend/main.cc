@@ -22,17 +22,12 @@
 #include "sphere.h"
 #include "mpi.h"
 
-static int const TAG_REQUEST = 20;
+static int const TAG_REQUEST = 10;
 static int const TAG_WORK = 20;
 static int const TAG_DIE = 30;
 
-int main(int argc, char *argv[]) {
-    int width = 1200;
-    if (argc == 2) {
-        width = std::atoi(argv[1]);
-    }
+static inline hittable_list init_world(void) {
     hittable_list world;
-
     auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
     world.add(make_shared<sphere>(point3(0,-1000,0), 1000, ground_material));
 
@@ -73,9 +68,11 @@ int main(int argc, char *argv[]) {
 
     auto material3 = make_shared<metal>(color(0.7, 0.6, 0.5), 0.0);
     world.add(make_shared<sphere>(point3(4, 1, 0), 1.0, material3));
+    return world;
+}
 
+static inline camera init_cam(int width) {
     camera cam;
-
     cam.aspect_ratio      = 16.0 / 9.0;
     cam.image_width       = width;
     cam.samples_per_pixel = 10;
@@ -90,35 +87,50 @@ int main(int argc, char *argv[]) {
     cam.focus_dist    = 10.0;
 
     cam.initialize();
+    return cam;
+}
+
+int main(int argc, char *argv[]) {
+    int width = 1200;
+    if (argc == 2) {
+        width = std::atoi(argv[1]);
+    }
+    hittable_list world = init_world();
+    camera cam = init_cam(width);
     int const image_height = cam.get_image_height();
     std::vector<color> pixels;
-    pixels.resize(cam.image_width * image_height * 2);
-    color *raw_data = pixels.data();
-    
+    color *raw_data;
+
     // inicializar MPI por volta daqui
-    int myrank, size;
-    MPI_Status status;
-    int done = 0;
-    int line = 0;
     MPI_Init(&argc, &argv);
 
     MPI_Datatype MPI_VEC3;
     int block_lengths[1] = {3}; // 3 doubles
     MPI_Aint offsets[1] = {offsetof(color, e)};
     MPI_Datatype types[1] = {MPI_DOUBLE};
-    // 1 == comprimento dos arrays. em geral, os tres terao o mesmo tamanho
+    // 1 == comprimento dos arrays.
     MPI_Type_create_struct(1, block_lengths, offsets, types, &MPI_VEC3);
     MPI_Type_commit(&MPI_VEC3);
 
+    int myrank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+    
+    int done = 0;
+    int line = 0;
+    int tmp;
+    MPI_Status status;
     if (size < 2) {
-        for (int line = 0; line < image_height; line++) {
+        pixels.resize(cam.image_width * image_height);
+        raw_data = pixels.data();
+        for (line = 0; line < image_height; line++) {
             cam.render_line(world, line, &raw_data[line * cam.image_width]);
         }
         cam.write_image(pixels);
         //cam.render(world);
     } else if (myrank == 0) {
+        pixels.resize(cam.image_width * image_height);
+        raw_data = pixels.data();
         // Loop:
         // MPI_Probe para verificar se ha mensagem e verificar quem a enviou antes de a receber
         // Se for TAG_REQUEST, enviar uma linha pro trabalhador e salvar linha enviada num dicionario/array
@@ -128,20 +140,19 @@ int main(int argc, char *argv[]) {
 
         // coordenador inicializa o arquivo da imagem (evita que o header ppm seja salvo multiplas vezes)
         std::unordered_map<int, int> line_per_worker;
-        // cam.write_image(pixels);
-        for (int i = 1; i < size; i++) {
-            // MPI_Send(&i, 1, MPI_INT, i, TAG_DIE, MPI_COMM_WORLD);
-            line_per_worker[i] = line;
-            MPI_Send(&line, 1, MPI_INT, i, TAG_WORK, MPI_COMM_WORLD);
-            line += 1;
-        }
+        std::vector<int> worker_balance_stats(size - 1, 0);
+        // batch inicial de trabalhos
+        // for (int i = 1; i < size; i++) {
+        //     line_per_worker[i] = line;
+        //     MPI_Send(&line, 1, MPI_INT, i, TAG_WORK, MPI_COMM_WORLD);
+        //     line += 1;
+        // }
         // contar linhas recebidas dos trabalhadores para saber se há mais trabalho para fazer
         int received = 0;
         while (!done) {
             MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == TAG_WORK) {
-            // std::clog << "trying 0 work" << std::endl;
-                // std::clog << line_per_worker[status.MPI_SOURCE] << " " << &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width] << std::endl;
+                // std::clog << line_per_worker[status.MPI_SOURCE] << " " << status.MPI_SOURCE << " " << &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width] << std::endl;
                 MPI_Recv(
                     &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width],
                     cam.image_width,
@@ -152,45 +163,53 @@ int main(int argc, char *argv[]) {
                     &status
                 );
                 received += 1;
-                if (received >= image_height) {
-                    done = 1;
-                } else if (line < image_height) {
+                worker_balance_stats[status.MPI_SOURCE - 1] += 1;
+                if (line < image_height) {
                     line_per_worker[status.MPI_SOURCE] = line;
                     MPI_Send(&line, 1, MPI_INT, status.MPI_SOURCE, TAG_WORK, MPI_COMM_WORLD);
                     line += 1;
+                } else if (received >= image_height) {
+                    done = 1;
                 }
+            } else if (status.MPI_TAG == TAG_REQUEST) {
+                MPI_Recv(&tmp, 1, MPI_INT, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, &status);
+                line_per_worker[status.MPI_SOURCE] = line;
+                MPI_Send(&line, 1, MPI_INT, status.MPI_SOURCE, TAG_WORK, MPI_COMM_WORLD);
+                line += 1;
             }
         }
         // tarefa do coordenador = enviar número da linha a ser renderizada aos trabalhadores [0, image_height)
-        cam.write_image(pixels);
         for (int i = 1; i < size; i++) {
             MPI_Send(&i, 1, MPI_INT, i, TAG_DIE, MPI_COMM_WORLD);
         }
+        cam.write_image(pixels);
+        for (int i = 1; i < size; i++) {
+            std::clog << "Worker: " << i << " Linhas renderizadas: " << worker_balance_stats[i - 1] << std::endl;
+        }
     } else {
+        pixels.resize(cam.image_width);
+        raw_data = pixels.data();
         // Loop:
         // MPI_Probe para verificar se ha trabalho para renderizar antes de tentar receber mensagem
         // Se for TAG_WORK, renderizar linha, devolver vetor para o coordenador e pedir por mais trabalho
         // Se for TAG_DIE, finalizar a execucao
         // Enviar TAG_REQUEST ao terminar o trabalho dentro do loop e aguardar resposta do coordenador
-
+        MPI_Send(&tmp, 1, MPI_INT, 0, TAG_REQUEST, MPI_COMM_WORLD);
         while (!done) {
             MPI_Probe(0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == TAG_DIE) {
-                // std::clog << "trying n die" << std::endl;
-                int tmp;
                 MPI_Recv(&tmp, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
                 done = 1;
+                // std::clog << "Worker: " << myrank << ", finalizando execucao..." << std::endl;
             } else if (status.MPI_TAG == TAG_WORK) {
-                // std::clog << "trying n work" << std::endl;
                 MPI_Recv(&line, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
-                cam.render_line(world, line, &raw_data[line * cam.image_width]);
-                MPI_Send(&raw_data[line * cam.image_width], cam.image_width, MPI_VEC3, 0, TAG_WORK, MPI_COMM_WORLD);
+                cam.render_line(world, line, raw_data);
+                MPI_Send(raw_data, cam.image_width, MPI_VEC3, 0, TAG_WORK, MPI_COMM_WORLD);
             }
 
         }
         // tarefa dos trabalhadores = renderizar linhas requisitadas pelo coordenador
     }
-    // std::clog << cam.get_image_height() << std::endl;
     // cam.render(world);
     // terminar MPI exatamente aqui
     MPI_Type_free(&MPI_VEC3);
