@@ -59,6 +59,7 @@ class camera {
     }
 
     void write_image(const std::vector<color>& pixels) {
+        std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         for (int j = 0; j < image_height; j++) {
             for (int i = 0; i < image_width; i++) {
                 write_color(std::cout, pixels[i + j * image_width]);
@@ -74,7 +75,7 @@ class camera {
         }
         // initialize();
 
-        // std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         std::vector<color> pixels;
         // pré-alocar vetor. agiliza processamento ao evitar realocações.
         pixels.resize(image_width * image_height);
