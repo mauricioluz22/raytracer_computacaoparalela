@@ -1,5 +1,5 @@
 CXX := mpic++
-FLAGS := -std=c++11 -Wall -Wextra -O3 -DNDEBUG -ffast-math -march=native -mtune=native -ftree-vectorize
+FLAGS := -std=c++11 -Wall -Wextra -O3 -DNDEBUG -ffast-math -ftree-vectorize # -march=native -mtune=native
 
 BUILD := build
 SRC := InOneWeekend/main.cc
