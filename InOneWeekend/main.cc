@@ -149,6 +149,7 @@ int main(int argc, char *argv[]) {
         // }
         // contar linhas recebidas dos trabalhadores para saber se há mais trabalho para fazer
         int received = 0;
+	    double t1 = MPI_Wtime();
         while (!done) {
             MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == TAG_WORK) {
@@ -178,6 +179,7 @@ int main(int argc, char *argv[]) {
                 line += 1;
             }
         }
+	    double t2 = MPI_Wtime();
         // tarefa do coordenador = enviar número da linha a ser renderizada aos trabalhadores [0, image_height)
         for (int i = 1; i < size; i++) {
             MPI_Send(&i, 1, MPI_INT, i, TAG_DIE, MPI_COMM_WORLD);
@@ -186,6 +188,7 @@ int main(int argc, char *argv[]) {
         for (int i = 1; i < size; i++) {
             std::clog << "Worker: " << i << " Linhas renderizadas: " << worker_balance_stats[i - 1] << std::endl;
         }
+	    std::clog << "Tempo de execucao (somente main loop): " << t2 - t1 << std::endl;
     } else {
         pixels.resize(cam.image_width);
         raw_data = pixels.data();
