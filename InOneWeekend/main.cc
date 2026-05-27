@@ -98,12 +98,15 @@ int main(int argc, char *argv[]) {
     hittable_list world = init_world();
     camera cam = init_cam(width);
     int const image_height = cam.get_image_height();
+    // buffer de pixels. inicializado no coordenador e nos trabalhadores.
     std::vector<color> pixels;
+    // necessario ter acesso ao buffer interno do vector para poder receber as linhas dos trabalhadores
     color *raw_data;
 
     // inicializar MPI por volta daqui
     MPI_Init(&argc, &argv);
 
+    // tipo especial, criado para poder transferir a lista de pixels via mensagem mais facilmente
     MPI_Datatype MPI_VEC3;
     int block_lengths[1] = {3}; // 3 doubles
     MPI_Aint offsets[1] = {offsetof(color, e)};
@@ -118,8 +121,11 @@ int main(int argc, char *argv[]) {
     
     int done = 0;
     int line = 0;
+    // variavel criada so pra enviar e receber mensagens de tipo request e die
+    // o valor desta nunca eh utilizado em momento algum, portanto seu valor pode ser qualquer um
     int tmp;
     MPI_Status status;
+    // caso seja alocado somente um processo
     if (size < 2) {
         pixels.resize(cam.image_width * image_height);
         raw_data = pixels.data();
@@ -129,31 +135,16 @@ int main(int argc, char *argv[]) {
         cam.write_image(pixels);
         //cam.render(world);
     } else if (myrank == 0) {
+        // inicializa o buffer com o tamanho total da imagem
         pixels.resize(cam.image_width * image_height);
         raw_data = pixels.data();
-        // Loop:
-        // MPI_Probe para verificar se ha mensagem e verificar quem a enviou antes de a receber
-        // Se for TAG_REQUEST, enviar uma linha pro trabalhador e salvar linha enviada num dicionario/array
-        // Se for TAG_WORK E ainda ha linhas para renderizar, repete instrucao anterior. Ademais, salvar vetor retornado pelo trabalhador
-        // Se nao houverem linhas para renderizar, enviar TAG_DIE para todos os trabalhadores
-        // Responder o primeiro trabalhador a pedir por mais trabalho, independente do quão frequentemente este o peça
-
-        // coordenador inicializa o arquivo da imagem (evita que o header ppm seja salvo multiplas vezes)
-        std::unordered_map<int, int> line_per_worker;
-        std::vector<int> worker_balance_stats(size - 1, 0);
-        // batch inicial de trabalhos
-        // for (int i = 1; i < size; i++) {
-        //     line_per_worker[i] = line;
-        //     MPI_Send(&line, 1, MPI_INT, i, TAG_WORK, MPI_COMM_WORLD);
-        //     line += 1;
-        // }
-        // contar linhas recebidas dos trabalhadores para saber se há mais trabalho para fazer
-        int received = 0;
-        double t1 = MPI_Wtime();
+        std::unordered_map<int, int> line_per_worker; // dicionario que guarda as linhas sendo atualmente renderizadas pelos trabalhadores
+        std::vector<int> worker_balance_stats(size - 1, 0); // guarda quantidade de linhas renderizadas por trabalhador.
+        int received = 0; // contar linhas recebidas dos trabalhadores para saber se ha mais trabalho para fazer
+        double t1 = MPI_Wtime(); // comeco do trabalho principal
         while (!done) {
             MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == TAG_WORK) {
-                // std::clog << line_per_worker[status.MPI_SOURCE] << " " << status.MPI_SOURCE << " " << &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width] << std::endl;
                 MPI_Recv(
                     &raw_data[line_per_worker[status.MPI_SOURCE] * cam.image_width],
                     cam.image_width,
@@ -179,31 +170,29 @@ int main(int argc, char *argv[]) {
                 line += 1;
             }
         }
-        double t2 = MPI_Wtime();
-        // tarefa do coordenador = enviar número da linha a ser renderizada aos trabalhadores [0, image_height)
+        double t2 = MPI_Wtime(); // fim do trabalho principal
+        cam.write_image(pixels);
+        double t3 = MPI_Wtime(); // fim do trabalho incluindo escrita da imagem no disco
         for (int i = 1; i < size; i++) {
+            // avisa o trabalhador que acabou o trabalho. manda ele terminar sua execucao
             MPI_Send(&i, 1, MPI_INT, i, TAG_DIE, MPI_COMM_WORLD);
         }
-        cam.write_image(pixels);
         for (int i = 1; i < size; i++) {
             std::clog << "Worker: " << i << " Linhas renderizadas: " << worker_balance_stats[i - 1] << std::endl;
         }
         std::clog << "Tempo de execucao (somente main loop): " << t2 - t1 << std::endl;
+        std::clog << "Tempo de execucao (incluindo escrita): " << t3 - t1 << std::endl;
     } else {
+        // para economizar memoria, trabalhadores inicializam o buffer somente com o tamanho da linha
         pixels.resize(cam.image_width);
         raw_data = pixels.data();
-        // Loop:
-        // MPI_Probe para verificar se ha trabalho para renderizar antes de tentar receber mensagem
-        // Se for TAG_WORK, renderizar linha, devolver vetor para o coordenador e pedir por mais trabalho
-        // Se for TAG_DIE, finalizar a execucao
-        // Enviar TAG_REQUEST ao terminar o trabalho dentro do loop e aguardar resposta do coordenador
+        // envia requisicao de trabalho pro coordenador. feito somente uma vez para poupar mensagens
         MPI_Send(&tmp, 1, MPI_INT, 0, TAG_REQUEST, MPI_COMM_WORLD);
         while (!done) {
             MPI_Probe(0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             if (status.MPI_TAG == TAG_DIE) {
                 MPI_Recv(&tmp, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
                 done = 1;
-                // std::clog << "Worker: " << myrank << ", finalizando execucao..." << std::endl;
             } else if (status.MPI_TAG == TAG_WORK) {
                 MPI_Recv(&line, 1, MPI_INT, 0, status.MPI_TAG, MPI_COMM_WORLD, &status);
                 cam.render_line(world, line, raw_data);
@@ -211,9 +200,7 @@ int main(int argc, char *argv[]) {
             }
 
         }
-        // tarefa dos trabalhadores = renderizar linhas requisitadas pelo coordenador
     }
-    // cam.render(world);
     // terminar MPI exatamente aqui
     MPI_Type_free(&MPI_VEC3);
     MPI_Finalize();
