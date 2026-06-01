@@ -1,0 +1,5 @@
+Tamanho largura (em todas as execuções): 3000px
+Tamanho altura (estimativa): 1687
+
+Nome do arquivo segue o seguinte formato: <numero de processos>_proc.txt
+Considerar que, para uma quantidade de processos, um deles não computa nada (coordenador)
