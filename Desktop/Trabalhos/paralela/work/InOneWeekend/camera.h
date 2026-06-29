@@ -37,29 +37,6 @@ class camera {
     double defocus_angle = 0;  // Variation angle of rays through each pixel
     double focus_dist = 10;    // Distance from camera lookfrom point to plane of perfect focus
 
-    // esta funcao assume que o buffer consiste numa linha (isto eh, num array)
-    // cujo tamanho eh igual ou maior a this->image_width
-    void render_line(const hittable& world, int line, color *buffer) {
-        if (!this->initialized) {
-            this->initialize();
-        }
-        int i;
-        // std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
-        for (i = 0; i < image_width; i++) {
-            color pixel_color(0,0,0);
-            int sample;
-            if (i + 64 < image_width) {
-                __builtin_prefetch(&buffer[i + 64], 1, 2);
-            }
-            for (sample = 0; sample < samples_per_pixel; sample++) {
-                ray r = get_ray(i, line);
-                pixel_color += ray_color(r, max_depth, world);
-            }
-            // write_color(std::cout, pixel_samples_scale * pixel_color);
-            buffer[i] = pixel_samples_scale * pixel_color;
-        }
-    }
-
     // Renderiza um BLOCO de linhas [start_line, start_line + n_lines) usando OpenMP.
     // Modelo WORKPOOL: todas as threads trabalham e a distribuicao das linhas eh
     // controlada pela estrutura de escalonamento dinamico do OpenMP (schedule(dynamic)),
@@ -91,49 +68,6 @@ class camera {
                 write_color(std::cout, pixels[i + j * image_width]);
             }
         }
-    }
-
-    // candidato ao openmp
-    void render(const hittable& world) {
-        if (!this->initialized) {
-            initialize();
-        }
-        // initialize();
-
-        std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
-        std::vector<color> pixels;
-        // pré-alocar vetor. agiliza processamento ao evitar realocações.
-        pixels.resize(image_width * image_height);
-        int j, i;
-        // double t1 = omp_get_wtime();
-        // #pragma omp parallel for collapse(2) schedule(guided, (image_height * image_width) / omp_get_num_threads()) private(j, i)
-        for (j = 0; j < image_height; j++) {
-            // std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
-            for (i = 0; i < image_width; i++) {
-                color pixel_color(0,0,0);
-                int sample;
-                if (i + 64 < image_width) {
-                    __builtin_prefetch(&pixels[i + 64 + j * image_width], 1, 2);
-                }
-                for (sample = 0; sample < samples_per_pixel; sample++) {
-                    ray r = get_ray(i, j);
-                    pixel_color += ray_color(r, max_depth, world);
-                }
-                // write_color(std::cout, pixel_samples_scale * pixel_color);
-                pixels[i + j * image_width] = pixel_samples_scale * pixel_color;
-            }
-        }
-        // std::clog << "Elapsed time: " << (omp_get_wtime() - t1) << std::endl;
-        // std::clog << (omp_get_wtime() - t1) << std::endl;
-
-        // outro trecho não-paralelizável, porém muito rápido
-        for (j = 0; j < image_height; j++) {
-            for (i = 0; i < image_width; i++) {
-                write_color(std::cout, pixels[i + j * image_width]);
-            }
-        }
-
-        // std::clog << "\rDone.                 \n";
     }
 
     int get_image_height() {
@@ -193,8 +127,6 @@ class camera {
     vec3   u, v, w;              // Camera frame basis vectors
     vec3   defocus_disk_u;       // Defocus disk horizontal radius
     vec3   defocus_disk_v;       // Defocus disk vertical radius
-    // std::vector<std::mt19937> rngs;
-
     ray get_ray(int i, int j) const {
         // Construct a camera ray originating from the defocus disk and directed at a randomly
         // sampled point around the pixel location i, j.
@@ -211,14 +143,7 @@ class camera {
     }
 
     vec3 sample_square() const {
-        // Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
-        // std::fprintf(stderr, "%d\n", omp_get_thread_num());
         return vec3(random_double() - 0.5, random_double() - 0.5, 0);
-    }
-
-    vec3 sample_disk(double radius) const {
-        // Returns a random point in the unit (radius 0.5) disk centered at the origin.
-        return radius * random_in_unit_disk();
     }
 
     point3 defocus_disk_sample() const {

@@ -43,7 +43,6 @@
 
 static int const TAG_REQUEST = 10;
 static int const TAG_WORK    = 20;
-static int const TAG_DIE     = 30;
 
 // Mensagem de atribuicao de trabalho: linha inicial + numero de linhas do bloco.
 struct WorkAssignment {
@@ -149,9 +148,6 @@ int main(int argc, char *argv[]) {
     // coord_dedicated = false -> rank 0 coordena E renderiza (hibrido no proprio no).
     bool coord_dedicated = (coord_mode_env && std::string(coord_mode_env) == "dedicated");
 
-    std::vector<color> pixels;
-    color *raw_data;
-
     MPI_Init(&argc, &argv);
 
     // Tipo MPI para transferir color (vec3 = 3 doubles).
@@ -168,15 +164,10 @@ int main(int argc, char *argv[]) {
 
     MPI_Status status;
 
-    // ------------------------------------------------------------------
-    // CASO 1: processo unico -> renderiza tudo sequencialmente (mas ainda
-    // usa OpenMP dentro do render_chunk se disponivel).
-    // ------------------------------------------------------------------
     if (size < 2) {
-        pixels.resize((size_t)image_width * image_height);
-        raw_data = pixels.data();
+        std::vector<color> pixels((size_t)image_width * image_height);
         double t1 = MPI_Wtime();
-        cam.render_chunk(world, 0, image_height, raw_data);
+        cam.render_chunk(world, 0, image_height, pixels.data());
         double t2 = MPI_Wtime();
         cam.write_image(pixels);
         std::clog << "Tempo de execucao (somente render): " << t2 - t1 << std::endl;
@@ -185,29 +176,23 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    // ------------------------------------------------------------------
-    // CASO 2: COORDENADOR (rank 0)
-    // ------------------------------------------------------------------
     if (myrank == 0) {
-        pixels.resize((size_t)image_width * image_height);
-        raw_data = pixels.data();
+        // Buffer global: apenas o coordenador aloca a imagem inteira.
+        std::vector<color> pixels((size_t)image_width * image_height);
+        color *raw_data = pixels.data();
 
-        // Para cada worker, guarda (start_line, n_lines) do bloco que ele esta processando.
         std::unordered_map<int, WorkAssignment> assignment;
-        std::vector<int> worker_balance_stats(size, 0); // linhas por rank (inclui rank 0 se trabalhar)
+        std::vector<int> worker_balance_stats(size, 0);
 
-        int next_line = 0;          // proxima linha ainda nao atribuida
-        int received_lines = 0;     // total de linhas ja recebidas/concluidas
-        int active_workers = size - 1; // workers remotos que ainda nao receberam DIE
+        int next_line = 0;
+        int received_lines = 0;
+        int active_workers = size - 1;
 
-        // Buffer temporario para o coordenador renderizar seu proprio chunk (modo hibrido).
         std::vector<color> coord_buf;
         if (!coord_dedicated) coord_buf.resize((size_t)CHUNK_LINES * image_width);
 
         double t1 = MPI_Wtime();
 
-        // Funcao auxiliar (lambda) que pega o proximo bloco disponivel.
-        // Retorna n_lines==0 quando nao ha mais trabalho.
         auto take_next_chunk = [&](WorkAssignment &wa) {
             if (next_line >= image_height) { wa.start_line = 0; wa.n_lines = 0; return; }
             wa.start_line = next_line;
@@ -215,11 +200,18 @@ int main(int argc, char *argv[]) {
             next_line += wa.n_lines;
         };
 
-        // Enquanto houver linhas a receber OU workers ativos a finalizar.
-        while (received_lines < image_height || active_workers > 0) {
+        // Envia proximo chunk ao worker src; n_lines==0 sinaliza termino.
+        auto dispatch_next = [&](int src) {
+            WorkAssignment nx;
+            take_next_chunk(nx);
+            if (nx.n_lines > 0)
+                assignment[src] = nx;
+            else
+                active_workers -= 1;
+            MPI_Send(&nx, 2, MPI_INT, src, TAG_WORK, MPI_COMM_WORLD);
+        };
 
-            // No modo hibrido, se nao ha mensagem pendente, o coordenador
-            // aproveita para renderizar um bloco proprio (nao bloqueia os workers).
+        while (received_lines < image_height || active_workers > 0) {
             int flag = 0;
             MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &flag, &status);
 
@@ -229,7 +221,6 @@ int main(int argc, char *argv[]) {
                     take_next_chunk(wa);
                     if (wa.n_lines > 0) {
                         cam.render_chunk(world, wa.start_line, wa.n_lines, coord_buf.data());
-                        // copia para o buffer global
                         std::copy(coord_buf.data(),
                                   coord_buf.data() + (size_t)wa.n_lines * image_width,
                                   &raw_data[(size_t)wa.start_line * image_width]);
@@ -238,46 +229,25 @@ int main(int argc, char *argv[]) {
                     }
                     continue;
                 }
-                // Coordenador dedicado sem mensagem: bloqueia ate chegar uma.
                 MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
             }
 
             int src = status.MPI_SOURCE;
 
             if (status.MPI_TAG == TAG_WORK) {
-                // Recebe o bloco renderizado de volta, direto na posicao correta.
                 WorkAssignment wa = assignment[src];
                 MPI_Recv(
                     &raw_data[(size_t)wa.start_line * image_width],
                     wa.n_lines * image_width,
-                    MPI_VEC3,
-                    src, TAG_WORK, MPI_COMM_WORLD, &status
+                    MPI_VEC3, src, TAG_WORK, MPI_COMM_WORLD, &status
                 );
                 received_lines += wa.n_lines;
                 worker_balance_stats[src] += wa.n_lines;
-
-                // Atribui novo bloco, ou manda finalizar se acabou.
-                WorkAssignment nx;
-                take_next_chunk(nx);
-                if (nx.n_lines > 0) {
-                    assignment[src] = nx;
-                    MPI_Send(&nx, 2, MPI_INT, src, TAG_WORK, MPI_COMM_WORLD);
-                } else {
-                    MPI_Send(&nx, 2, MPI_INT, src, TAG_DIE, MPI_COMM_WORLD);
-                    active_workers -= 1;
-                }
+                dispatch_next(src);
             } else if (status.MPI_TAG == TAG_REQUEST) {
                 int tmp;
                 MPI_Recv(&tmp, 1, MPI_INT, src, TAG_REQUEST, MPI_COMM_WORLD, &status);
-                WorkAssignment nx;
-                take_next_chunk(nx);
-                if (nx.n_lines > 0) {
-                    assignment[src] = nx;
-                    MPI_Send(&nx, 2, MPI_INT, src, TAG_WORK, MPI_COMM_WORLD);
-                } else {
-                    MPI_Send(&nx, 2, MPI_INT, src, TAG_DIE, MPI_COMM_WORLD);
-                    active_workers -= 1;
-                }
+                dispatch_next(src);
             }
         }
 
@@ -294,35 +264,20 @@ int main(int argc, char *argv[]) {
                   << " | CHUNK_LINES=" << CHUNK_LINES << std::endl;
         std::clog << "Tempo de execucao (somente main loop): " << t2 - t1 << std::endl;
         std::clog << "Tempo de execucao (incluindo escrita): " << t3 - t1 << std::endl;
-    }
-    // ------------------------------------------------------------------
-    // CASO 3: TRABALHADOR (rank > 0)
-    // ------------------------------------------------------------------
-    else {
-        // Buffer local: apenas um chunk (CHUNK_LINES linhas), economiza RAM.
+    } else {
+        // Workers alocam apenas um chunk, nunca a imagem inteira.
         std::vector<color> chunk_buf((size_t)CHUNK_LINES * image_width);
-        raw_data = chunk_buf.data();
+        color *raw_data = chunk_buf.data();
 
-        int done = 0;
         int tmp = 0;
-        // Pedido inicial de trabalho (uma unica vez).
         MPI_Send(&tmp, 1, MPI_INT, 0, TAG_REQUEST, MPI_COMM_WORLD);
 
-        while (!done) {
-            MPI_Probe(0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-            if (status.MPI_TAG == TAG_DIE) {
-                WorkAssignment wa;
-                MPI_Recv(&wa, 2, MPI_INT, 0, TAG_DIE, MPI_COMM_WORLD, &status);
-                done = 1;
-            } else if (status.MPI_TAG == TAG_WORK) {
-                WorkAssignment wa;
-                MPI_Recv(&wa, 2, MPI_INT, 0, TAG_WORK, MPI_COMM_WORLD, &status);
-                // Renderiza o bloco com OpenMP (workpool interno).
-                cam.render_chunk(world, wa.start_line, wa.n_lines, raw_data);
-                // Devolve o bloco renderizado.
-                MPI_Send(raw_data, wa.n_lines * image_width, MPI_VEC3,
-                         0, TAG_WORK, MPI_COMM_WORLD);
-            }
+        WorkAssignment wa;
+        for (;;) {
+            MPI_Recv(&wa, 2, MPI_INT, 0, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (wa.n_lines == 0) break;
+            cam.render_chunk(world, wa.start_line, wa.n_lines, raw_data);
+            MPI_Send(raw_data, wa.n_lines * image_width, MPI_VEC3, 0, TAG_WORK, MPI_COMM_WORLD);
         }
     }
 
