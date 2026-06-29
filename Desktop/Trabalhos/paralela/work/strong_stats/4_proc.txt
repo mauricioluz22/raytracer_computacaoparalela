@@ -1,0 +1,5 @@
+Worker: 1 Linhas renderizadas: 609
+Worker: 2 Linhas renderizadas: 538
+Worker: 3 Linhas renderizadas: 540
+Tempo de execucao (somente main loop): 384.848
+Tempo de execucao (incluindo escrita): 388.799
