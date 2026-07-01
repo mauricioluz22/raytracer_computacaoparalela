@@ -1,0 +1,7 @@
+srun: job 35373 queued and waiting for resources
+srun: job 35373 has been allocated resources
+Worker: 0 Linhas renderizadas: 0
+Worker: 1 Linhas renderizadas: 2812
+Modo coordenador: dedicated | CHUNK_LINES=16
+Tempo de execucao (somente main loop): 302.502
+Tempo de execucao (incluindo escrita): 313.69

@@ -1,0 +1,2 @@
+Tempo de execucao (somente main loop): 1876.2
+Tempo de execucao (incluindo escrita): 1887.23

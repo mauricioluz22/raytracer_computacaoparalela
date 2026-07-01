@@ -1,0 +1,33 @@
+Worker: 1 Linhas renderizadas: 91
+Worker: 2 Linhas renderizadas: 91
+Worker: 3 Linhas renderizadas: 91
+Worker: 4 Linhas renderizadas: 91
+Worker: 5 Linhas renderizadas: 91
+Worker: 6 Linhas renderizadas: 91
+Worker: 7 Linhas renderizadas: 91
+Worker: 8 Linhas renderizadas: 91
+Worker: 9 Linhas renderizadas: 91
+Worker: 10 Linhas renderizadas: 91
+Worker: 11 Linhas renderizadas: 91
+Worker: 12 Linhas renderizadas: 91
+Worker: 13 Linhas renderizadas: 91
+Worker: 14 Linhas renderizadas: 91
+Worker: 15 Linhas renderizadas: 91
+Worker: 16 Linhas renderizadas: 90
+Worker: 17 Linhas renderizadas: 91
+Worker: 18 Linhas renderizadas: 91
+Worker: 19 Linhas renderizadas: 91
+Worker: 20 Linhas renderizadas: 91
+Worker: 21 Linhas renderizadas: 91
+Worker: 22 Linhas renderizadas: 91
+Worker: 23 Linhas renderizadas: 91
+Worker: 24 Linhas renderizadas: 90
+Worker: 25 Linhas renderizadas: 90
+Worker: 26 Linhas renderizadas: 90
+Worker: 27 Linhas renderizadas: 90
+Worker: 28 Linhas renderizadas: 90
+Worker: 29 Linhas renderizadas: 90
+Worker: 30 Linhas renderizadas: 90
+Worker: 31 Linhas renderizadas: 90
+Tempo de execucao (somente main loop): 63.6376
+Tempo de execucao (incluindo escrita): 74.6107

@@ -1,0 +1,6 @@
+Worker: 0 Linhas renderizadas: 0
+Worker: 1 Linhas renderizadas: 1424
+Worker: 2 Linhas renderizadas: 1388
+Modo coordenador: dedicated | CHUNK_LINES=16
+Tempo de execucao (somente main loop): 227.697
+Tempo de execucao (incluindo escrita): 238.937

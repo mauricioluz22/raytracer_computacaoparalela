@@ -1,0 +1,9 @@
+Worker: 1 Linhas renderizadas: 402
+Worker: 2 Linhas renderizadas: 401
+Worker: 3 Linhas renderizadas: 402
+Worker: 4 Linhas renderizadas: 402
+Worker: 5 Linhas renderizadas: 403
+Worker: 6 Linhas renderizadas: 401
+Worker: 7 Linhas renderizadas: 401
+Tempo de execucao (somente main loop): 280.147
+Tempo de execucao (incluindo escrita): 291.271
